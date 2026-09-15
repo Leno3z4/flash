@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rare-friends-mint",
+  "main": "cloudflare/src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "triggers": {
+    "crons": ["45 14 * * *"]
+  },
+  "containers": [
+    {
+      "class_name": "RareFriendsMintContainer",
+      "image": "./Dockerfile",
+      "max_instances": 1,
+      "instance_type": "lite"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MINT_CONTAINER",
+        "class_name": "RareFriendsMintContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RareFriendsMintContainer"]
+    }
+  ]
+}
