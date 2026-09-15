@@ -8,7 +8,7 @@ The Rust CLI and transaction code are intentionally unchanged. `mint_runner.py` 
 
 ## Rare Friends target
 
-The worker is configured for `rare-friends-genesis` and starts the container at `14:45 UTC` on `2026-09-16`, which is 15 minutes before the public-stage start of `15:00 GMT+1`.
+The worker is configured for `rare-friends-genesis` and starts the container at `14:30 UTC` on `2026-09-16`, giving the existing scheduler a 30-minute launch buffer before the public-stage start of `15:00 GMT+1`.
 
 The runner refuses to guess if it sees more than one public stage. It selects the displayed `PUBLIC_SALE` stage, token `0` when requested, quantity `1`, and confirms the existing CLI prompt. It also refuses to perform an interactive funding step inside the container.
 
