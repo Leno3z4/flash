@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the existing interactive CLI from a non-interactive container.
+"""Drive the existing interactive CLI from a non-interactive runner.
 
 This deliberately does not modify the Rust CLI or transaction path. It feeds the
 same answers a human would provide, while refusing to guess a mint stage.
@@ -19,7 +19,7 @@ from pathlib import Path
 COLLECTION = os.environ.get("MINT_COLLECTION", "rare-friends-genesis")
 TARGET_DATE = os.environ.get("MINT_TARGET_DATE", "2026-09-16")
 WALLET_KEY = os.environ.get("MINT_WALLET_KEY", "")
-RPC_URL = os.environ.get("MINT_RPC_URL", "")
+RPC_URL = os.environ.get("MINT_RPC_URL", "https://rpc.mainnet.chain.robinhood.com")
 
 PUBLIC_STAGE_RE = re.compile(
     rb"^\s*(\d+)\.\s+Stage\s+\d+\s*\|\s*PUBLIC_SALE\s*\|",
@@ -35,10 +35,8 @@ def fail(message: str) -> "NoReturn":
 def write_ephemeral_env() -> Path:
     if not WALLET_KEY:
         fail("MINT_WALLET_KEY is not set")
-    if not RPC_URL:
-        fail("MINT_RPC_URL is not set")
 
-    env_path = Path("/app/.env")
+    env_path = Path(".env")
     values = [
         f"WALLET_KEY={WALLET_KEY}",
         f"RPC_URL={RPC_URL}",
@@ -68,7 +66,10 @@ def write_ephemeral_env() -> Path:
 
 def send(master: int, text: str) -> None:
     os.write(master, (text + "\n").encode("utf-8"))
-    print(f"[mint-runner] answered: {text if text != WALLET_KEY else '<redacted>'}", flush=True)
+    print(
+        f"[mint-runner] answered: {text if text != WALLET_KEY else '<redacted>'}",
+        flush=True,
+    )
 
 
 def run() -> int:
@@ -78,11 +79,11 @@ def run() -> int:
     env["MINT_RUNNER"] = "1"
 
     child = subprocess.Popen(
-        ["opensea-mint", "mint"],
+        ["./target/release/opensea-mint", "mint"],
         stdin=slave,
         stdout=slave,
         stderr=slave,
-        cwd="/app",
+        cwd=".",
         env=env,
         close_fds=True,
     )
@@ -94,8 +95,9 @@ def run() -> int:
     token_sent = False
     quantity_sent = False
     approval_sent = False
-    last_activity = time.monotonic()
-    deadline = last_activity + int(os.environ.get("MINT_INTERACTION_TIMEOUT_SECONDS", "1800"))
+    deadline = time.monotonic() + int(
+        os.environ.get("MINT_INTERACTION_TIMEOUT_SECONDS", "2700")
+    )
 
     try:
         while child.poll() is None:
@@ -114,27 +116,27 @@ def run() -> int:
             if not chunk:
                 break
 
-            last_activity = time.monotonic()
             output.extend(chunk)
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
 
-            # The target is always supplied first.
             if not collection_sent and b"Mint target:" in output:
                 send(master, COLLECTION)
                 collection_sent = True
                 continue
 
-            # Refuse to guess which stage to mint. If the CLI asks for a phase,
-            # select the displayed PUBLIC_SALE row by its actual number.
             if not phase_sent and b"Phases:" in output:
                 matches = PUBLIC_STAGE_RE.findall(bytes(output))
                 if not matches:
                     child.kill()
-                    fail("CLI presented phase selection, but no PUBLIC_SALE stage was found")
+                    fail(
+                        "CLI presented phase selection, but no PUBLIC_SALE stage was found"
+                    )
                 if len(matches) != 1:
                     child.kill()
-                    fail("More than one PUBLIC_SALE stage was presented; refusing to guess")
+                    fail(
+                        "More than one PUBLIC_SALE stage was presented; refusing to guess"
+                    )
                 send(master, matches[0].decode("ascii"))
                 phase_sent = True
                 continue
@@ -156,7 +158,9 @@ def run() -> int:
 
             if b"Funding:" in output:
                 child.kill()
-                fail("Wallet is underfunded for the prepared transaction; refusing to guess funding steps")
+                fail(
+                    "Wallet is underfunded for the prepared transaction; refusing to guess funding steps"
+                )
 
     finally:
         try:
@@ -170,9 +174,16 @@ def run() -> int:
 
     return_code = child.wait()
     if return_code != 0:
-        print(f"[mint-runner] opensea-mint exited with code {return_code}", file=sys.stderr, flush=True)
+        print(
+            f"[mint-runner] opensea-mint exited with code {return_code}",
+            file=sys.stderr,
+            flush=True,
+        )
     else:
-        print(f"[mint-runner] mint process completed for {TARGET_DATE}", flush=True)
+        print(
+            f"[mint-runner] mint process completed for {TARGET_DATE}",
+            flush=True,
+        )
     return return_code
 
 
