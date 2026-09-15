@@ -11,6 +11,8 @@ on:
         options:
           - dry-run
           - live
+  schedule:
+    - cron: '25 13 16 9 *'
 
 permissions:
   contents: read
@@ -25,7 +27,7 @@ jobs:
       MINT_COLLECTION: rare-friends-genesis
       MINT_TARGET_DATE: 2026-09-16
       MINT_INTERACTION_TIMEOUT_SECONDS: 2700
-      MINT_DRY_RUN: ${{ inputs.mode == 'dry-run' && '1' || '0' }}
+      MINT_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'dry-run' && '1' || '0' }}
     steps:
       - name: Check out deployment branch
         uses: actions/checkout@v4
@@ -41,9 +43,23 @@ jobs:
           test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
           test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
 
-      - name: Show selected mode
+      - name: Stop one-shot schedule after target date
+        if: github.event_name == 'schedule'
+        shell: bash
         run: |
-          echo "Workflow mode: ${{ inputs.mode }}"
+          test "$(date -u +%F)" = "2026-09-16" || {
+            echo "Scheduled target date has passed; exiting without minting."
+            exit 0
+          }
+
+      - name: Show selected mode
+        shell: bash
+        run: |
+          if [ "$MINT_DRY_RUN" = "1" ]; then
+            echo "Workflow mode: dry-run"
+          else
+            echo "Workflow mode: live"
+          fi
 
       - name: Build opensea-mint
         run: cargo build --release --locked --bin opensea-mint
