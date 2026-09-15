@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Run a safe calldata dry-run or the live mint'
+        description: 'Run a safe preflight dry-run or the live mint'
         required: true
         default: dry-run
         type: choice
