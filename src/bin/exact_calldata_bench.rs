@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use opensea_mint::{
     chain::ChainGateway,
@@ -23,7 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = WalletSigner::from_private_key(wallet_key)?;
     let wallet = signer.identity().address;
 
-    let gateway = ChainGateway::new(loaded.app.opensea.request_timeout_ms.into())?;
+    let gateway = ChainGateway::new(Duration::from_millis(
+        loaded.app.opensea.request_timeout_ms,
+    ))?;
     let probe = gateway.probe_rpc(&loaded.app.rpc_url).await?;
     println!("chain_id={}", probe.chain_id);
     println!("wallet={}", wallet);
