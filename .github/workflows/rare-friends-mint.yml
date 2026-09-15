@@ -43,6 +43,34 @@ jobs:
           test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
           test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
 
+      - name: Verify configured RPC is Robinhood Chain mainnet
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          payload = json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "eth_chainId",
+              "params": [],
+          }).encode()
+          request = urllib.request.Request(
+              os.environ["MINT_RPC_URL"],
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=10) as response:
+              result = json.load(response)
+          chain_id = int(result["result"], 16)
+          print(f"RPC chain_id={chain_id}")
+          if chain_id != 4663:
+              raise SystemExit(f"Wrong network: expected Robinhood Chain mainnet (4663), got {chain_id}")
+          PY
+
       - name: Stop one-shot schedule after target date
         if: github.event_name == 'schedule'
         shell: bash
