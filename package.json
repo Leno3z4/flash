@@ -1,0 +1,13 @@
+{
+  "name": "flash-cloudflare",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cf:deploy": "wrangler deploy",
+    "cf:dev": "wrangler dev --test-scheduled"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "0.3.7",
+    "wrangler": "4.131.2"
+  }
+}
