@@ -3,7 +3,7 @@ name: Rare Friends Genesis Mint
 on:
   workflow_dispatch:
   schedule:
-    - cron: '40 13 16 9 *'
+    - cron: '20 13 16 9 *'
 
 permissions:
   contents: read
