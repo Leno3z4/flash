@@ -70,10 +70,12 @@ jobs:
               samples.append(elapsed_ms)
               print(f"sample {i + 1:02d}: {elapsed_ms:.2f} ms")
 
-          print(f"min: {min(samples):.2f} ms")
-          print(f"median: {statistics.median(samples):.2f} ms")
-          print(f"p95: {statistics.quantiles(samples, n=20)[18]:.2f} ms")
-          print(f"max: {max(samples):.2f} ms")
+          ordered = sorted(samples)
+          p95_index = min(len(ordered) - 1, max(0, (95 * len(ordered) + 99) // 100 - 1))
+          print(f"min: {ordered[0]:.2f} ms")
+          print(f"median: {statistics.median(ordered):.2f} ms")
+          print(f"p95: {ordered[p95_index]:.2f} ms")
+          print(f"max: {ordered[-1]:.2f} ms")
           connection.close()
           PY
 
@@ -115,6 +117,69 @@ jobs:
           print(f"min: {min(samples):.2f} ms")
           print(f"median: {statistics.median(samples):.2f} ms")
           print(f"max: {max(samples):.2f} ms")
+          connection.close()
+          PY
+
+      - name: Install WebSocket benchmark dependency
+        shell: bash
+        run: python3 -m pip install --disable-pip-version-check --quiet websocket-client
+
+      - name: Benchmark Robinhood WebSocket new-head delivery
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import statistics
+          import time
+          from urllib.parse import urlparse
+          from websocket import create_connection
+
+          rpc = urlparse(os.environ["MINT_RPC_URL"])
+          if rpc.scheme != "https" or not rpc.hostname:
+              raise SystemExit("MINT_RPC_URL must be an HTTPS URL")
+          ws_url = f"wss://{rpc.netloc}{rpc.path or '/'}"
+          if rpc.query:
+              ws_url += "?" + rpc.query
+
+          started = time.perf_counter()
+          connection = create_connection(ws_url, timeout=10)
+          connect_ms = (time.perf_counter() - started) * 1000
+          print(f"connection_ms={connect_ms:.2f}")
+
+          connection.send(json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "eth_subscribe",
+              "params": ["newHeads"],
+          }))
+          response = json.loads(connection.recv())
+          if "result" not in response:
+              raise SystemExit(f"subscription failed: {response}")
+          print(f"subscription_id={response['result']}")
+
+          samples = []
+          for index in range(5):
+              started = time.perf_counter()
+              while True:
+                  message = json.loads(connection.recv())
+                  if message.get("method") == "eth_subscription":
+                      break
+              elapsed_ms = (time.perf_counter() - started) * 1000
+              samples.append(elapsed_ms)
+              block = message.get("params", {}).get("result", {}).get("number")
+              print(f"head_{index + 1}_receive_loop_ms={elapsed_ms:.2f} block={block}")
+
+          print(f"receive_loop_min_ms={min(samples):.2f}")
+          print(f"receive_loop_median_ms={statistics.median(samples):.2f}")
+          print(f"receive_loop_max_ms={max(samples):.2f}")
+
+          connection.send(json.dumps({
+              "jsonrpc": "2.0",
+              "id": 2,
+              "method": "eth_unsubscribe",
+              "params": [response['result']],
+          }))
           connection.close()
           PY
 
