@@ -19,6 +19,7 @@ jobs:
       MINT_TARGET_DATE: 2026-09-16
       MINT_INTERACTION_TIMEOUT_SECONDS: 2700
       MINT_DRY_RUN: '0'
+      MINT_FAST_HOT_LEAD_MS: 5000
     steps:
       - name: Check out deployment branch
         uses: actions/checkout@v4
@@ -81,6 +82,9 @@ jobs:
             echo "Scheduled target date has passed; exiting without minting."
             exit 0
           }
+
+      - name: Apply isolated fast hot-path lead
+        run: python3 scripts/prepare_fast_build.py
 
       - name: Build opensea-mint
         run: cargo build --release --locked --bin opensea-mint
