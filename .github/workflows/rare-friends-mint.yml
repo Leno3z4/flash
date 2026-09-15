@@ -73,7 +73,7 @@ jobs:
 
       - name: Confirm live mode
         shell: bash
-        run: echo "Workflow mode: live"
+        run: echo 'Workflow mode: live'
 
       - name: Build opensea-mint
         run: cargo build --release --locked --bin opensea-mint
