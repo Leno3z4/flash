@@ -2,17 +2,8 @@ name: Rare Friends Genesis Mint
 
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Run a safe preflight dry-run or the live mint'
-        required: true
-        default: dry-run
-        type: choice
-        options:
-          - dry-run
-          - live
   schedule:
-    - cron: '25 13 16 9 *'
+    - cron: '40 13 16 9 *'
 
 permissions:
   contents: read
@@ -27,7 +18,7 @@ jobs:
       MINT_COLLECTION: rare-friends-genesis
       MINT_TARGET_DATE: 2026-09-16
       MINT_INTERACTION_TIMEOUT_SECONDS: 2700
-      MINT_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'dry-run' && '1' || '0' }}
+      MINT_DRY_RUN: '0'
     steps:
       - name: Check out deployment branch
         uses: actions/checkout@v4
@@ -80,14 +71,9 @@ jobs:
             exit 0
           }
 
-      - name: Show selected mode
+      - name: Confirm live mode
         shell: bash
-        run: |
-          if [ "$MINT_DRY_RUN" = "1" ]; then
-            echo "Workflow mode: dry-run"
-          else
-            echo "Workflow mode: live"
-          fi
+        run: echo "Workflow mode: live"
 
       - name: Build opensea-mint
         run: cargo build --release --locked --bin opensea-mint
