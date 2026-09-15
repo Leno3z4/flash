@@ -1,0 +1,125 @@
+name: Rare Friends Latency Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+    steps:
+      - name: Verify RPC secret is present
+        shell: bash
+        run: test -n "$MINT_RPC_URL"
+
+      - name: Benchmark persistent RPC connection
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import http.client
+          import json
+          import os
+          import statistics
+          import time
+          from urllib.parse import urlparse
+
+          parsed = urlparse(os.environ["MINT_RPC_URL"])
+          if parsed.scheme != "https" or not parsed.hostname:
+              raise SystemExit("MINT_RPC_URL must be an HTTPS URL")
+
+          connection = http.client.HTTPSConnection(
+              parsed.hostname,
+              parsed.port or 443,
+              timeout=10,
+          )
+          path = parsed.path or "/"
+          if parsed.query:
+              path += "?" + parsed.query
+
+          payloads = [
+              {"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []},
+              {"jsonrpc": "2.0", "id": 2, "method": "eth_blockNumber", "params": []},
+              {"jsonrpc": "2.0", "id": 3, "method": "eth_getBlockByNumber", "params": ["latest", False]},
+          ]
+
+          samples = []
+          for i in range(12):
+              body = json.dumps(payloads[i % len(payloads)]).encode()
+              start = time.perf_counter()
+              connection.request(
+                  "POST",
+                  path,
+                  body=body,
+                  headers={
+                      "Content-Type": "application/json",
+                      "Connection": "keep-alive",
+                      "Content-Length": str(len(body)),
+                  },
+              )
+              response = connection.getresponse()
+              response_body = response.read()
+              elapsed_ms = (time.perf_counter() - start) * 1000
+              if response.status != 200:
+                  raise SystemExit(f"RPC returned HTTP {response.status}")
+              json.loads(response_body)
+              samples.append(elapsed_ms)
+              print(f"sample {i + 1:02d}: {elapsed_ms:.2f} ms")
+
+          print(f"min: {min(samples):.2f} ms")
+          print(f"median: {statistics.median(samples):.2f} ms")
+          print(f"p95: {statistics.quantiles(samples, n=20)[18]:.2f} ms")
+          print(f"max: {max(samples):.2f} ms")
+          connection.close()
+          PY
+
+      - name: Benchmark persistent OpenSea connection
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import http.client
+          import statistics
+          import time
+          from urllib.parse import urlparse
+
+          parsed = urlparse("https://gql.opensea.io/graphql")
+          connection = http.client.HTTPSConnection(parsed.hostname, 443, timeout=10)
+          body = b'{"query":"query{__typename}"}'
+          samples = []
+
+          for i in range(8):
+              start = time.perf_counter()
+              connection.request(
+                  "POST",
+                  parsed.path or "/graphql",
+                  body=body,
+                  headers={
+                      "Content-Type": "application/json",
+                      "x-app-id": "os2-web",
+                      "Connection": "keep-alive",
+                      "Content-Length": str(len(body)),
+                  },
+              )
+              response = connection.getresponse()
+              response.read()
+              elapsed_ms = (time.perf_counter() - start) * 1000
+              if response.status >= 500:
+                  raise SystemExit(f"OpenSea returned HTTP {response.status}")
+              samples.append(elapsed_ms)
+              print(f"sample {i + 1:02d}: {elapsed_ms:.2f} ms")
+
+          print(f"min: {min(samples):.2f} ms")
+          print(f"median: {statistics.median(samples):.2f} ms")
+          print(f"max: {max(samples):.2f} ms")
+          connection.close()
+          PY
+
+      - name: Report optimization target
+        shell: bash
+        run: |
+          echo "Persistent connections are the baseline for the fast path."
+          echo "The next code optimization should move all possible OpenSea/RPC work before the sale-open trigger."
