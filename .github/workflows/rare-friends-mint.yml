@@ -1,0 +1,38 @@
+name: Rare Friends Genesis Mint
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
+      MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+      MINT_COLLECTION: rare-friends-genesis
+      MINT_TARGET_DATE: 2026-09-16
+      MINT_INTERACTION_TIMEOUT_SECONDS: 2700
+    steps:
+      - name: Check out deployment branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify required secrets are present
+        shell: bash
+        run: |
+          test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
+          test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
+
+      - name: Build opensea-mint
+        run: cargo build --release --locked --bin opensea-mint
+
+      - name: Run Rare Friends mint runner
+        run: python3 cloudflare/mint_runner.py
