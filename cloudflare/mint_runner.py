@@ -72,9 +72,6 @@ def run_dry_run() -> int:
     env_path = write_ephemeral_env()
     manifest_path: Path | None = None
     try:
-        if not WALLET_KEY:
-            fail("MINT_WALLET_KEY is not set")
-
         manifest = {
             "version": 1,
             "wallets": [{"private_key": WALLET_KEY, "quantity": 1}],
