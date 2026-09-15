@@ -1,0 +1,88 @@
+name: Rare Friends Latency Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+    steps:
+      - name: Verify RPC secret is present
+        shell: bash
+        run: test -n "$MINT_RPC_URL"
+
+      - name: Benchmark RPC connection and JSON-RPC latency
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import statistics
+          import time
+          import urllib.request
+
+          url = os.environ["MINT_RPC_URL"]
+          payloads = [
+              {"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []},
+              {"jsonrpc": "2.0", "id": 2, "method": "eth_blockNumber", "params": []},
+              {"jsonrpc": "2.0", "id": 3, "method": "eth_getBlockByNumber", "params": ["latest", False]},
+          ]
+
+          samples = []
+          for i in range(10):
+              payload = json.dumps(payloads[i % len(payloads)]).encode()
+              request = urllib.request.Request(
+                  url,
+                  data=payload,
+                  headers={"Content-Type": "application/json", "Connection": "keep-alive"},
+                  method="POST",
+              )
+              start = time.perf_counter()
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  body = response.read()
+              elapsed_ms = (time.perf_counter() - start) * 1000
+              json.loads(body)
+              samples.append(elapsed_ms)
+              print(f"sample {i + 1:02d}: {elapsed_ms:.2f} ms")
+
+          print(f"min: {min(samples):.2f} ms")
+          print(f"median: {statistics.median(samples):.2f} ms")
+          print(f"p95: {statistics.quantiles(samples, n=20)[18]:.2f} ms")
+          print(f"max: {max(samples):.2f} ms")
+          PY
+
+      - name: Benchmark OpenSea API reachability
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import statistics
+          import time
+          import urllib.request
+
+          url = "https://gql.opensea.io/graphql"
+          body = b'{"query":"query{__typename}"}'
+          samples = []
+          for i in range(5):
+              request = urllib.request.Request(
+                  url,
+                  data=body,
+                  headers={"Content-Type": "application/json", "x-app-id": "os2-web"},
+                  method="POST",
+              )
+              start = time.perf_counter()
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  response.read()
+              elapsed_ms = (time.perf_counter() - start) * 1000
+              samples.append(elapsed_ms)
+              print(f"sample {i + 1:02d}: {elapsed_ms:.2f} ms")
+
+          print(f"min: {min(samples):.2f} ms")
+          print(f"median: {statistics.median(samples):.2f} ms")
+          print(f"max: {max(samples):.2f} ms")
+          PY
