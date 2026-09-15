@@ -17,17 +17,26 @@ jobs:
         shell: bash
         run: test -n "$MINT_RPC_URL"
 
-      - name: Benchmark RPC connection and JSON-RPC latency
+      - name: Benchmark persistent RPC connection
         shell: bash
         run: |
           python3 - <<'PY'
+          import http.client
           import json
           import os
           import statistics
           import time
-          import urllib.request
+          from urllib.parse import urlparse
 
-          url = os.environ["MINT_RPC_URL"]
+          parsed = urlparse(os.environ["MINT_RPC_URL"])
+          if parsed.scheme != "https" or not parsed.hostname:
+              raise SystemExit("MINT_RPC_URL must be an HTTPS URL")
+
+          connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=10)
+          path = parsed.path or "/"
+          if parsed.query:
+              path += "?" + parsed.query
+
           payloads = [
               {"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []},
               {"jsonrpc": "2.0", "id": 2, "method": "eth_blockNumber", "params": []},
@@ -35,19 +44,25 @@ jobs:
           ]
 
           samples = []
-          for i in range(10):
-              payload = json.dumps(payloads[i % len(payloads)]).encode()
-              request = urllib.request.Request(
-                  url,
-                  data=payload,
-                  headers={"Content-Type": "application/json", "Connection": "keep-alive"},
-                  method="POST",
-              )
+          for i in range(12):
+              body = json.dumps(payloads[i % len(payloads)]).encode()
               start = time.perf_counter()
-              with urllib.request.urlopen(request, timeout=10) as response:
-                  body = response.read()
+              connection.request(
+                  "POST",
+                  path,
+                  body=body,
+                  headers={
+                      "Content-Type": "application/json",
+                      "Connection": "keep-alive",
+                      "Content-Length": str(len(body)),
+                  },
+              )
+              response = connection.getresponse()
+              response_body = response.read()
               elapsed_ms = (time.perf_counter() - start) * 1000
-              json.loads(body)
+              if response.status != 200:
+                  raise SystemExit(f"RPC returned HTTP {response.status}")
+              json.loads(response_body)
               samples.append(elapsed_ms)
               print(f"sample {i + 1:02d}: {elapsed_ms:.2f} ms")
 
@@ -55,34 +70,52 @@ jobs:
           print(f"median: {statistics.median(samples):.2f} ms")
           print(f"p95: {statistics.quantiles(samples, n=20)[18]:.2f} ms")
           print(f"max: {max(samples):.2f} ms")
+          connection.close()
           PY
 
-      - name: Benchmark OpenSea API reachability
+      - name: Benchmark persistent OpenSea connection
         shell: bash
         run: |
           python3 - <<'PY'
+          import http.client
           import statistics
           import time
-          import urllib.request
+          from urllib.parse import urlparse
 
-          url = "https://gql.opensea.io/graphql"
+          parsed = urlparse("https://gql.opensea.io/graphql")
+          connection = http.client.HTTPSConnection(parsed.hostname, 443, timeout=10)
           body = b'{"query":"query{__typename}"}'
           samples = []
-          for i in range(5):
-              request = urllib.request.Request(
-                  url,
-                  data=body,
-                  headers={"Content-Type": "application/json", "x-app-id": "os2-web"},
-                  method="POST",
-              )
+
+          for i in range(8):
               start = time.perf_counter()
-              with urllib.request.urlopen(request, timeout=10) as response:
-                  response.read()
+              connection.request(
+                  "POST",
+                  parsed.path or "/graphql",
+                  body=body,
+                  headers={
+                      "Content-Type": "application/json",
+                      "x-app-id": "os2-web",
+                      "Connection": "keep-alive",
+                      "Content-Length": str(len(body)),
+                  },
+              )
+              response = connection.getresponse()
+              response.read()
               elapsed_ms = (time.perf_counter() - start) * 1000
+              if response.status >= 500:
+                  raise SystemExit(f"OpenSea returned HTTP {response.status}")
               samples.append(elapsed_ms)
               print(f"sample {i + 1:02d}: {elapsed_ms:.2f} ms")
 
           print(f"min: {min(samples):.2f} ms")
           print(f"median: {statistics.median(samples):.2f} ms")
           print(f"max: {max(samples):.2f} ms")
+          connection.close()
           PY
+
+      - name: Report optimization target
+        shell: bash
+        run: |
+          echo "Persistent connections are the baseline for the fast path."
+          echo "Next code work should move all possible OpenSea/RPC work before the sale-open trigger."
