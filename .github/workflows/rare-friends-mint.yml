@@ -42,7 +42,8 @@ jobs:
           test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
 
       - name: Show selected mode
-        run: echo "Workflow mode: ${{ inputs.mode }}"
+        run: |
+          echo "Workflow mode: ${{ inputs.mode }}"
 
       - name: Build opensea-mint
         run: cargo build --release --locked --bin opensea-mint
