@@ -9,7 +9,7 @@ type Env = {
 const LAUNCH_DATE_UTC = "2026-09-16";
 const COLLECTION = "rare-friends-genesis";
 
-export class RareFriendsMintContainer extends Container<Env> {
+export class RareFriendsMintContainer extends Container {
   // The Rust process waits for the scheduled mint window, so keep the VM
   // alive well past the 15:00 GMT+1 public-stage start.
   sleepAfter = "2h";
