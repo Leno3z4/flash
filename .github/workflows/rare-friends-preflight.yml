@@ -1,0 +1,172 @@
+name: Rare Friends Genesis Preflight Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
+      MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+      MINT_COLLECTION: rare-friends-genesis
+      MINT_TARGET_DATE: 2026-09-16
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Verify required secrets are present
+        shell: bash
+        run: |
+          test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
+          test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
+
+      - name: Verify configured RPC is Robinhood Chain mainnet
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          payload = json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "eth_chainId",
+              "params": [],
+          }).encode()
+          request = urllib.request.Request(
+              os.environ["MINT_RPC_URL"],
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=10) as response:
+              result = json.load(response)
+          chain_id = int(result["result"], 16)
+          print(f"RPC chain_id={chain_id}")
+          if chain_id != 4663:
+              raise SystemExit(f"Wrong network: expected Robinhood Chain mainnet (4663), got {chain_id}")
+          PY
+
+      - name: Write temporary single-wallet config
+        shell: bash
+        run: |
+          cat > .env <<EOF
+          WALLET_KEY=$MINT_WALLET_KEY
+          RPC_URL=$MINT_RPC_URL
+          FEE_AUTOMATIC=true
+          GAS_LIMIT=300000
+          EOF
+          chmod 600 .env
+
+      - name: Build opensea-mint
+        run: cargo build --release --locked --bin opensea-mint
+
+      - name: Test live mint path up to the scheduling confirmation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import pty
+          import select
+          import subprocess
+          import sys
+          import time
+
+          collection = os.environ["MINT_COLLECTION"]
+          master, slave = pty.openpty()
+          child = subprocess.Popen(
+              ["./target/release/opensea-mint", "mint"],
+              stdin=slave,
+              stdout=slave,
+              stderr=slave,
+              env={**os.environ, "MINT_RUNNER": "1"},
+              close_fds=True,
+          )
+          os.close(slave)
+
+          output = bytearray()
+          collection_sent = False
+          cancelled = False
+          deadline = time.monotonic() + 180
+
+          def send(text: str) -> None:
+              os.write(master, (text + "\n").encode())
+              print(f"[preflight] answered: {text}", flush=True)
+
+          try:
+              while child.poll() is None:
+                  if time.monotonic() > deadline:
+                      child.kill()
+                      raise SystemExit("Preflight timed out")
+
+                  ready, _, _ = select.select([master], [], [], 1.0)
+                  if not ready:
+                      continue
+
+                  try:
+                      chunk = os.read(master, 8192)
+                  except OSError:
+                      break
+                  if not chunk:
+                      break
+
+                  output.extend(chunk)
+                  sys.stdout.buffer.write(chunk)
+                  sys.stdout.buffer.flush()
+                  text = output.decode("utf-8", errors="ignore")
+
+                  if not collection_sent and "Mint target:" in text:
+                      send(collection)
+                      collection_sent = True
+                      continue
+
+                  if "upcoming" in text.lower() and "schedulable" in text.lower():
+                      print("[preflight] Upcoming eligible stage detected; live scheduler path is working.", flush=True)
+
+                  if "Phases:" in text and not cancelled:
+                      send("q")
+                      cancelled = True
+                      continue
+
+                  if "Token ID:" in text and not cancelled:
+                      send("q")
+                      cancelled = True
+                      continue
+
+                  if "Answer [y/N]:" in text and not cancelled:
+                      send("n")
+                      cancelled = True
+                      continue
+
+                  if "Funding:" in text:
+                      child.kill()
+                      raise SystemExit("Preflight unexpectedly reached a funding prompt")
+          finally:
+              try:
+                  os.close(master)
+              except OSError:
+                  pass
+              try:
+                  os.remove(".env")
+              except FileNotFoundError:
+                  pass
+
+          return_code = child.wait()
+          final_text = output.decode("utf-8", errors="ignore").lower()
+          if "schedulable" not in final_text or "upcoming" not in final_text:
+              raise SystemExit("Preflight did not observe an upcoming schedulable stage")
+          if return_code == 0:
+              raise SystemExit("Preflight unexpectedly completed a mint")
+          print("[preflight] PASS: live path reached the upcoming-stage scheduling logic and was cancelled before approval.", flush=True)
+          PY
