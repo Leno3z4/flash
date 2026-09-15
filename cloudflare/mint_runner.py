@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Drive the existing interactive CLI from a non-interactive runner.
 
-This deliberately does not modify the Rust CLI or transaction path. It feeds the
-same answers a human would provide, while refusing to guess a mint stage.
+The live mode feeds the same answers a human would provide. The dry-run mode
+uses the existing `Calldata` command to authenticate the configured wallet and
+fetch/validate OpenSea mint calldata without signing or broadcasting a transaction.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import pty
 import re
 import select
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -20,6 +23,7 @@ COLLECTION = os.environ.get("MINT_COLLECTION", "rare-friends-genesis")
 TARGET_DATE = os.environ.get("MINT_TARGET_DATE", "2026-09-16")
 WALLET_KEY = os.environ.get("MINT_WALLET_KEY", "")
 RPC_URL = os.environ.get("MINT_RPC_URL", "https://rpc.mainnet.chain.robinhood.com")
+DRY_RUN = os.environ.get("MINT_DRY_RUN", "0").lower() in {"1", "true", "yes"}
 
 PUBLIC_STAGE_RE = re.compile(
     rb"^\s*(\d+)\.\s+Stage\s+\d+\s*\|\s*PUBLIC_SALE\s*\|",
@@ -64,6 +68,55 @@ def write_ephemeral_env() -> Path:
     return env_path
 
 
+def run_dry_run() -> int:
+    env_path = write_ephemeral_env()
+    manifest_path: Path | None = None
+    try:
+        if not WALLET_KEY:
+            fail("MINT_WALLET_KEY is not set")
+
+        manifest = {
+            "version": 1,
+            "wallets": [{"private_key": WALLET_KEY, "quantity": 1}],
+        }
+        fd, path = tempfile.mkstemp(prefix="rare-friends-dry-run-", suffix=".json")
+        os.close(fd)
+        manifest_path = Path(path)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        os.chmod(manifest_path, 0o600)
+
+        print("[mint-runner] DRY RUN: no transaction will be signed or broadcast", flush=True)
+        print(f"[mint-runner] collection: {COLLECTION}", flush=True)
+        print(f"[mint-runner] rpc: {RPC_URL}", flush=True)
+
+        result = subprocess.run(
+            [
+                "./target/release/opensea-mint",
+                "calldata",
+                "--collection",
+                COLLECTION,
+                "--wallets",
+                str(manifest_path),
+                "--token-id",
+                "0",
+            ],
+            cwd=".",
+            env={**os.environ, "MINT_RUNNER": "1"},
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            fail(f"dry-run calldata inspection failed with code {result.returncode}")
+        print(f"[mint-runner] DRY RUN PASSED for {TARGET_DATE}", flush=True)
+        return 0
+    finally:
+        try:
+            if manifest_path is not None:
+                manifest_path.unlink(missing_ok=True)
+        finally:
+            env_path.unlink(missing_ok=True)
+
+
 def send(master: int, text: str) -> None:
     os.write(master, (text + "\n").encode("utf-8"))
     print(
@@ -72,7 +125,7 @@ def send(master: int, text: str) -> None:
     )
 
 
-def run() -> int:
+def run_live() -> int:
     env_path = write_ephemeral_env()
     master, slave = pty.openpty()
     env = os.environ.copy()
@@ -185,6 +238,12 @@ def run() -> int:
             flush=True,
         )
     return return_code
+
+
+def run() -> int:
+    if DRY_RUN:
+        return run_dry_run()
+    return run_live()
 
 
 if __name__ == "__main__":
