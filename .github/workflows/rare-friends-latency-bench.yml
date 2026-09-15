@@ -9,13 +9,16 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+      MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
     steps:
-      - name: Verify RPC secret is present
+      - name: Verify required secrets are present
         shell: bash
-        run: test -n "$MINT_RPC_URL"
+        run: |
+          test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
+          test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
 
       - name: Benchmark persistent RPC connection
         shell: bash
@@ -68,7 +71,7 @@ jobs:
 
           print(f"min: {min(samples):.2f} ms")
           print(f"median: {statistics.median(samples):.2f} ms")
-          print(f"p95: {statistics.quantiles(samples, n=20)[18]:.2f} ms")
+          print(f"p95: {max(samples):.2f} ms (small-sample conservative bound)")
           print(f"max: {max(samples):.2f} ms")
           connection.close()
           PY
@@ -114,8 +117,89 @@ jobs:
           connection.close()
           PY
 
+      - name: Prepare benchmark environment
+        shell: bash
+        run: |
+          umask 077
+          cat > .env <<EOF
+          WALLET_KEY=$MINT_WALLET_KEY
+          RPC_URL=$MINT_RPC_URL
+          FEE_AUTOMATIC=true
+          GAS_LIMIT=300000
+          OPENSEA_RETRY_INTERVAL_MS=100
+          EOF
+
+      - name: Build and run exact mint calldata benchmark
+        shell: bash
+        run: cargo run --release --locked --bin exact_calldata_bench
+
+      - name: Clean benchmark environment
+        if: always()
+        shell: bash
+        run: rm -f .env
+
+      - name: Benchmark Robinhood Chain WebSocket
+        shell: bash
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet websocket-client
+          python3 - <<'PY'
+          import json
+          import os
+          import statistics
+          import time
+          from urllib.parse import urlsplit
+          import websocket
+
+          rpc = os.environ["MINT_RPC_URL"]
+          parts = urlsplit(rpc)
+          if parts.scheme != "https" or not parts.hostname:
+              raise SystemExit("MINT_RPC_URL must be an HTTPS URL")
+          ws_url = "wss://" + parts.netloc + parts.path
+          if parts.query:
+              ws_url += "?" + parts.query
+
+          started = time.perf_counter()
+          connection = websocket.create_connection(ws_url, timeout=10)
+          print(f"connection_ms={(time.perf_counter() - started) * 1000:.2f}")
+
+          connection.send(json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "eth_subscribe",
+              "params": ["newHeads"],
+          }))
+          response = json.loads(connection.recv())
+          if "result" not in response:
+              raise SystemExit(f"subscription failed: {response}")
+
+          subscription_id = response["result"]
+          print(f"subscription_id={subscription_id}")
+          samples = []
+          for index in range(5):
+              started = time.perf_counter()
+              while True:
+                  message = json.loads(connection.recv())
+                  if message.get("method") == "eth_subscription":
+                      break
+              elapsed_ms = (time.perf_counter() - started) * 1000
+              samples.append(elapsed_ms)
+              block = message.get("params", {}).get("result", {})
+              print(f"head_{index + 1}_receive_loop_ms={elapsed_ms:.2f} block={block.get('number')}")
+
+          print(f"receive_loop_min_ms={min(samples):.2f}")
+          print(f"receive_loop_median_ms={statistics.median(samples):.2f}")
+          print(f"receive_loop_max_ms={max(samples):.2f}")
+          connection.send(json.dumps({
+              "jsonrpc": "2.0",
+              "id": 2,
+              "method": "eth_unsubscribe",
+              "params": [subscription_id],
+          }))
+          connection.close()
+          PY
+
       - name: Report optimization target
         shell: bash
         run: |
-          echo "Persistent connections are the baseline for the fast path."
-          echo "Next code work should move all possible OpenSea/RPC work before the sale-open trigger."
+          echo "Measured warm RPC, warm OpenSea, exact mint calldata, and WebSocket timing."
+          echo "Only the exact mint calldata benchmark informs the sale-open hot path."
