@@ -1,0 +1,84 @@
+name: Rare Friends Exact Calldata Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
+      MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+    steps:
+      - name: Check out benchmark code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build and registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-exact-calldata-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-exact-calldata-
+            ${{ runner.os }}-cargo-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify required secrets are present
+        shell: bash
+        run: |
+          test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
+          test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
+
+      - name: Verify configured RPC is Robinhood Chain mainnet
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          payload = json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "eth_chainId",
+              "params": [],
+          }).encode()
+          request = urllib.request.Request(
+              os.environ["MINT_RPC_URL"],
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=10) as response:
+              result = json.load(response)
+          chain_id = int(result["result"], 16)
+          print(f"RPC chain_id={chain_id}")
+          if chain_id != 4663:
+              raise SystemExit(f"Wrong network: expected Robinhood Chain mainnet (4663), got {chain_id}")
+          PY
+
+      - name: Write temporary benchmark environment
+        shell: bash
+        run: |
+          cat > .env <<EOF
+          WALLET_KEY=$MINT_WALLET_KEY
+          RPC_URL=$MINT_RPC_URL
+          FEE_AUTOMATIC=true
+          GAS_LIMIT=300000
+          EOF
+          trap 'rm -f .env' EXIT
+          cargo run --release --locked --bin exact_calldata_bench
