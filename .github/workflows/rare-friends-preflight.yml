@@ -134,9 +134,6 @@ jobs:
                   if "upcoming" in text.lower() and "schedulable" in text.lower():
                       print("[preflight] Upcoming eligible stage detected; live scheduler path is working.", flush=True)
 
-                  # The CLI may auto-select the only eligible upcoming stage,
-                  # so there may be no interactive "Phases:" prompt. Cancel
-                  # at the first configuration prompt instead, before approval.
                   if "Phases:" in text and not cancelled:
                       send("q")
                       cancelled = True
@@ -174,8 +171,8 @@ jobs:
           final_text = output.decode("utf-8", errors="ignore").lower()
           if "schedulable" not in final_text or "upcoming" not in final_text:
               raise SystemExit("Preflight did not observe an upcoming schedulable stage")
-          if return_code == 0:
-              raise SystemExit("Preflight unexpectedly completed a mint")
+          if "operation cancelled" not in final_text:
+              raise SystemExit("Preflight did not report the CLI cancellation")
           if not cancelled:
               raise SystemExit("Preflight could not reach a safe cancellation prompt")
           print("[preflight] PASS: live path reached the upcoming-stage scheduling logic and was cancelled before approval.", flush=True)
