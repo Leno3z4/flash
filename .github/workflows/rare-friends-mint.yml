@@ -2,6 +2,15 @@ name: Rare Friends Genesis Mint
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run a safe calldata dry-run or the live mint'
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - live
 
 permissions:
   contents: read
@@ -16,6 +25,7 @@ jobs:
       MINT_COLLECTION: rare-friends-genesis
       MINT_TARGET_DATE: 2026-09-16
       MINT_INTERACTION_TIMEOUT_SECONDS: 2700
+      MINT_DRY_RUN: ${{ inputs.mode == 'dry-run' && '1' || '0' }}
     steps:
       - name: Check out deployment branch
         uses: actions/checkout@v4
@@ -30,6 +40,9 @@ jobs:
         run: |
           test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
           test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
+
+      - name: Show selected mode
+        run: echo "Workflow mode: ${{ inputs.mode }}"
 
       - name: Build opensea-mint
         run: cargo build --release --locked --bin opensea-mint
