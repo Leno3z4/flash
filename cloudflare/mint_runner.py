@@ -37,6 +37,15 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(1)
 
 
+def child_environment() -> dict[str, str]:
+    """Pass only non-secret environment variables to the Rust child process."""
+    env = dict(os.environ)
+    env.pop("MINT_WALLET_KEY", None)
+    env.pop("MINT_RPC_URL", None)
+    env["MINT_RUNNER"] = "1"
+    return env
+
+
 def prepare_runtime() -> tuple[Path, Path]:
     """Create a disposable working directory that contains only runtime secrets."""
     if not WALLET_KEY:
@@ -116,7 +125,7 @@ def run_dry_run() -> int:
                 "0",
             ],
             cwd=runtime_dir,
-            env={**os.environ, "MINT_RUNNER": "1"},
+            env=child_environment(),
             text=True,
             check=False,
         )
@@ -144,15 +153,13 @@ def run_live() -> int:
     child = None
     return_code = 1
     try:
-        env = os.environ.copy()
-        env["MINT_RUNNER"] = "1"
         child = subprocess.Popen(
             [str(runtime_binary), "mint"],
             stdin=slave,
             stdout=slave,
             stderr=slave,
             cwd=runtime_dir,
-            env=env,
+            env=child_environment(),
             close_fds=True,
         )
         os.close(slave)
