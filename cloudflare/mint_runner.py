@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import shutil
 from pathlib import Path
 
 COLLECTION = os.environ.get("MINT_COLLECTION", "rare-friends-genesis")
@@ -36,47 +37,64 @@ def fail(message: str) -> "NoReturn":
     raise SystemExit(1)
 
 
-def write_ephemeral_env() -> Path:
+def prepare_runtime() -> tuple[Path, Path]:
+    """Create a disposable working directory that contains only runtime secrets."""
     if not WALLET_KEY:
         fail("MINT_WALLET_KEY is not set")
 
-    env_path = Path(".env")
-    values = [
-        f"WALLET_KEY={WALLET_KEY}",
-        f"RPC_URL={RPC_URL}",
-        "FEE_AUTOMATIC=true",
-        "GAS_LIMIT=300000",
-    ]
-    for name in (
-        "SCHEDULE_REFRESH_INTERVAL_SECONDS",
-        "TRANSACTION_MAX_ATTEMPTS",
-        "PENDING_TIMEOUT_SECONDS",
-        "RECEIPT_POLL_BASE_DELAY_MS",
-        "RECEIPT_POLL_MAX_DELAY_MS",
-        "REPLACEMENT_BUMP_BPS",
-        "OPENSEA_REQUEST_TIMEOUT_MS",
-        "ELIGIBILITY_REQUEST_TIMEOUT_MS",
-        "OPENSEA_MAX_ATTEMPTS",
-        "OPENSEA_RETRY_INTERVAL_MS",
-        "OPENSEA_CALLDATA_MAX_ATTEMPTS",
-    ):
-        value = os.environ.get(f"MINT_{name}")
-        if value:
-            values.append(f"{name}={value}")
+    source_binary = Path.cwd() / "target" / "release" / "opensea-mint"
+    if not source_binary.is_file():
+        fail(f"mint binary is missing: {source_binary}")
 
-    env_path.write_text("\n".join(values) + "\n", encoding="utf-8")
-    return env_path
+    runtime_dir = Path(tempfile.mkdtemp(prefix=".mint-runner-", dir=Path.cwd()))
+    try:
+        target_dir = runtime_dir / "target" / "release"
+        target_dir.mkdir(parents=True)
+        runtime_binary = target_dir / "opensea-mint"
+        shutil.copy2(source_binary, runtime_binary)
+        runtime_binary.chmod(0o700)
+
+        env_path = runtime_dir / ".env"
+        values = [
+            f"WALLET_KEY={WALLET_KEY}",
+            f"RPC_URL={RPC_URL}",
+            "FEE_AUTOMATIC=true",
+            "GAS_LIMIT=300000",
+        ]
+        for name in (
+            "SCHEDULE_REFRESH_INTERVAL_SECONDS",
+            "TRANSACTION_MAX_ATTEMPTS",
+            "PENDING_TIMEOUT_SECONDS",
+            "RECEIPT_POLL_BASE_DELAY_MS",
+            "RECEIPT_POLL_MAX_DELAY_MS",
+            "REPLACEMENT_BUMP_BPS",
+            "OPENSEA_REQUEST_TIMEOUT_MS",
+            "ELIGIBILITY_REQUEST_TIMEOUT_MS",
+            "OPENSEA_MAX_ATTEMPTS",
+            "OPENSEA_RETRY_INTERVAL_MS",
+            "OPENSEA_CALLDATA_MAX_ATTEMPTS",
+        ):
+            value = os.environ.get(f"MINT_{name}")
+            if value:
+                values.append(f"{name}={value}")
+
+        env_path.write_text("\n".join(values) + "\n", encoding="utf-8")
+        env_path.chmod(0o600)
+        return runtime_dir, runtime_binary
+    except Exception:
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+        raise
 
 
 def run_dry_run() -> int:
-    env_path = write_ephemeral_env()
+    runtime_dir, runtime_binary = prepare_runtime()
     manifest_path: Path | None = None
     try:
         manifest = {
             "version": 1,
             "wallets": [{"private_key": WALLET_KEY, "quantity": 1}],
         }
-        fd, path = tempfile.mkstemp(prefix="rare-friends-dry-run-", suffix=".json")
+        fd, path = tempfile.mkstemp(prefix="rare-friends-dry-run-", suffix=".json", dir=runtime_dir)
         os.close(fd)
         manifest_path = Path(path)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -84,11 +102,11 @@ def run_dry_run() -> int:
 
         print("[mint-runner] DRY RUN: no transaction will be signed or broadcast", flush=True)
         print(f"[mint-runner] collection: {COLLECTION}", flush=True)
-        print(f"[mint-runner] rpc: {RPC_URL}", flush=True)
+        print("[mint-runner] rpc: <configured endpoint redacted>", flush=True)
 
         result = subprocess.run(
             [
-                "./target/release/opensea-mint",
+                str(runtime_binary),
                 "calldata",
                 "--collection",
                 COLLECTION,
@@ -97,7 +115,7 @@ def run_dry_run() -> int:
                 "--token-id",
                 "0",
             ],
-            cwd=".",
+            cwd=runtime_dir,
             env={**os.environ, "MINT_RUNNER": "1"},
             text=True,
             check=False,
@@ -107,11 +125,9 @@ def run_dry_run() -> int:
         print(f"[mint-runner] DRY RUN PASSED for {TARGET_DATE}", flush=True)
         return 0
     finally:
-        try:
-            if manifest_path is not None:
-                manifest_path.unlink(missing_ok=True)
-        finally:
-            env_path.unlink(missing_ok=True)
+        if manifest_path is not None:
+            manifest_path.unlink(missing_ok=True)
+        shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
 def send(master: int, text: str) -> None:
@@ -123,17 +139,17 @@ def send(master: int, text: str) -> None:
 
 
 def run_live() -> int:
-    env_path = write_ephemeral_env()
+    runtime_dir, runtime_binary = prepare_runtime()
     master, slave = pty.openpty()
     env = os.environ.copy()
     env["MINT_RUNNER"] = "1"
 
     child = subprocess.Popen(
-        ["./target/release/opensea-mint", "mint"],
+        [str(runtime_binary), "mint"],
         stdin=slave,
         stdout=slave,
         stderr=slave,
-        cwd=".",
+        cwd=runtime_dir,
         env=env,
         close_fds=True,
     )
@@ -217,12 +233,9 @@ def run_live() -> int:
             os.close(master)
         except OSError:
             pass
-        try:
-            env_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
     return_code = child.wait()
+    shutil.rmtree(runtime_dir, ignore_errors=True)
     if return_code != 0:
         print(
             f"[mint-runner] opensea-mint exited with code {return_code}",
