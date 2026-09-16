@@ -21,9 +21,9 @@ for pattern, label in ((r'source\s*=\s*"git\+', "git-sourced lock entry"), (r'so
     if re.search(pattern, lock):
         raise SystemExit(f"Cargo.lock contains a forbidden {label}")
 
-# Every non-root package pulled from crates.io must have a checksum in the lockfile.
-blocks = re.split(r"\n\[\[package\]\]\n?", lock)
-for block in blocks[1:]:
+# Every package pulled from crates.io must have a 64-hex checksum in Cargo.lock.
+blocks = re.split(r"(?=\[\[package\]\]\n)", lock)
+for block in blocks:
     name = re.search(r'^name = "([^"]+)"$', block, re.MULTILINE)
     if not name:
         continue
