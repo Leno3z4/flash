@@ -10,46 +10,53 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
-      MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
     steps:
       - name: Check out benchmark code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
 
       - name: Cache Rust build and registry
-        uses: actions/cache@v4
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-exact-calldata-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-exact-calldata-
-            ${{ runner.os }}-cargo-
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: '3.12'
 
       - name: Verify required secrets are present
+        env:
+          MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
+          MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
         shell: bash
         run: |
           test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
           test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
 
       - name: Verify configured RPC is Robinhood Chain mainnet
+        env:
+          MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
         shell: bash
         run: |
           python3 - <<'PY'
           import json
           import os
           import urllib.request
+          from urllib.parse import urlparse
+
+          rpc = urlparse(os.environ["MINT_RPC_URL"])
+          if rpc.scheme != "https" or rpc.hostname not in {
+              "rpc.mainnet.chain.robinhood.com",
+              "robinhood-mainnet.g.alchemy.com",
+          }:
+              raise SystemExit("MINT_RPC_URL must be an HTTPS Robinhood Chain mainnet endpoint")
 
           payload = json.dumps({
               "jsonrpc": "2.0",
@@ -71,14 +78,24 @@ jobs:
               raise SystemExit(f"Wrong network: expected Robinhood Chain mainnet (4663), got {chain_id}")
           PY
 
-      - name: Write temporary benchmark environment
+      - name: Run exact calldata benchmark with disposable config
+        env:
+          MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
+          MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
         shell: bash
         run: |
-          cat > .env <<EOF
+          set -euo pipefail
+          runtime_dir="$(mktemp -d .mint-bench-XXXXXX)"
+          cleanup() { rm -rf "$runtime_dir"; }
+          trap cleanup EXIT
+          umask 077
+          cat > "$runtime_dir/.env" <<EOF
           WALLET_KEY=$MINT_WALLET_KEY
           RPC_URL=$MINT_RPC_URL
           FEE_AUTOMATIC=true
           GAS_LIMIT=300000
           EOF
-          trap 'rm -f .env' EXIT
-          cargo run --release --locked --bin exact_calldata_bench
+          (
+            cd "$runtime_dir"
+            cargo run --release --locked --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" --bin exact_calldata_bench
+          )
