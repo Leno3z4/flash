@@ -13,11 +13,11 @@ import os
 import pty
 import re
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
-import shutil
 from pathlib import Path
 
 COLLECTION = os.environ.get("MINT_COLLECTION", "rare-friends-genesis")
@@ -141,31 +141,33 @@ def send(master: int, text: str) -> None:
 def run_live() -> int:
     runtime_dir, runtime_binary = prepare_runtime()
     master, slave = pty.openpty()
-    env = os.environ.copy()
-    env["MINT_RUNNER"] = "1"
-
-    child = subprocess.Popen(
-        [str(runtime_binary), "mint"],
-        stdin=slave,
-        stdout=slave,
-        stderr=slave,
-        cwd=runtime_dir,
-        env=env,
-        close_fds=True,
-    )
-    os.close(slave)
-
-    output = bytearray()
-    collection_sent = False
-    phase_sent = False
-    token_sent = False
-    quantity_sent = False
-    approval_sent = False
-    deadline = time.monotonic() + int(
-        os.environ.get("MINT_INTERACTION_TIMEOUT_SECONDS", "2700")
-    )
-
+    child = None
+    return_code = 1
     try:
+        env = os.environ.copy()
+        env["MINT_RUNNER"] = "1"
+        child = subprocess.Popen(
+            [str(runtime_binary), "mint"],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            cwd=runtime_dir,
+            env=env,
+            close_fds=True,
+        )
+        os.close(slave)
+        slave = -1
+
+        output = bytearray()
+        collection_sent = False
+        phase_sent = False
+        token_sent = False
+        quantity_sent = False
+        approval_sent = False
+        deadline = time.monotonic() + int(
+            os.environ.get("MINT_INTERACTION_TIMEOUT_SECONDS", "2700")
+        )
+
         while child.poll() is None:
             if time.monotonic() > deadline:
                 child.kill()
@@ -228,26 +230,36 @@ def run_live() -> int:
                     "Wallet is underfunded for the prepared transaction; refusing to guess funding steps"
                 )
 
+        return_code = child.wait()
+        if return_code != 0:
+            print(
+                f"[mint-runner] opensea-mint exited with code {return_code}",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"[mint-runner] mint process completed for {TARGET_DATE}",
+                flush=True,
+            )
+        return return_code
     finally:
         try:
             os.close(master)
         except OSError:
             pass
-
-    return_code = child.wait()
-    shutil.rmtree(runtime_dir, ignore_errors=True)
-    if return_code != 0:
-        print(
-            f"[mint-runner] opensea-mint exited with code {return_code}",
-            file=sys.stderr,
-            flush=True,
-        )
-    else:
-        print(
-            f"[mint-runner] mint process completed for {TARGET_DATE}",
-            flush=True,
-        )
-    return return_code
+        if slave != -1:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+        if child is not None and child.poll() is None:
+            child.kill()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+        shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
 def run() -> int:
