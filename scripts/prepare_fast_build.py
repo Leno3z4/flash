@@ -12,7 +12,7 @@ if not 2000 <= lead_ms <= 10000:
 path = Path("src/command.rs")
 text = path.read_text(encoding="utf-8")
 old = "const CALLDATA_HOT_LEAD_MS: u64 = 2_000;"
-new = f"const CALLDATA_HOT_LEAD_MS: u64 = {lead_ms:,};"
+new = f"const CALLDATA_HOT_LEAD_MS: u64 = {lead_ms};"
 if old not in text:
     raise SystemExit("Expected hot-path constant was not found; refusing to patch")
 path.write_text(text.replace(old, new, 1), encoding="utf-8")
