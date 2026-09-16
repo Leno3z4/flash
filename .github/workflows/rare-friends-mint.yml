@@ -43,6 +43,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Cache release binary
+        id: binary-cache
+        uses: actions/cache@v4
+        with:
+          path: target/release/opensea-mint
+          key: ${{ runner.os }}-opensea-mint-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'src/**/*.rs', 'scripts/prepare_fast_build.py') }}-hot${{ env.MINT_FAST_HOT_LEAD_MS }}
+
       - name: Verify required secrets are present
         shell: bash
         run: |
@@ -87,10 +94,16 @@ jobs:
           }
 
       - name: Apply isolated fast hot-path lead
+        if: steps.binary-cache.outputs.cache-hit != 'true'
         run: python3 scripts/prepare_fast_build.py
 
-      - name: Build opensea-mint
+      - name: Build opensea-mint when binary cache misses
+        if: steps.binary-cache.outputs.cache-hit != 'true'
         run: cargo build --release --locked --bin opensea-mint
+
+      - name: Confirm binary is executable
+        shell: bash
+        run: test -x target/release/opensea-mint
 
       - name: Run Rare Friends mint runner
         run: python3 cloudflare/mint_runner.py
