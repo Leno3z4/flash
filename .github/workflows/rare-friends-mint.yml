@@ -3,14 +3,14 @@ name: Rare Friends Genesis Mint
 on:
   workflow_dispatch:
   schedule:
-    - cron: '20 13 16 9 *'
+    - cron: '20 13 17 9 *'
 
 permissions:
   contents: read
 
 concurrency:
   group: rare-friends-genesis-mint
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   mint:
@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 60
     env:
       MINT_COLLECTION: rare-friends-genesis
-      MINT_TARGET_DATE: 2026-09-16
+      MINT_TARGET_DATE: 2026-09-17
       MINT_INTERACTION_TIMEOUT_SECONDS: 2700
       MINT_DRY_RUN: '0'
       MINT_FAST_HOT_LEAD_MS: 5000
@@ -90,12 +90,11 @@ jobs:
               raise SystemExit(f"Wrong network: expected Robinhood Chain mainnet (4663), got {chain_id}")
           PY
 
-      - name: Stop one-shot schedule after target date
-        if: github.event_name == 'schedule'
+      - name: Stop manual runs until the target date
         shell: bash
         run: |
-          test "$(date -u +%F)" = "2026-09-16" || {
-            echo "Scheduled target date has passed; exiting without minting."
+          test "$(date -u +%F)" = "2026-09-17" || {
+            echo "Public mint target date is 2026-09-17; exiting without minting."
             exit 0
           }
 
