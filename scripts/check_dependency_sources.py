@@ -1,27 +1,40 @@
 #!/usr/bin/env python3
-"""Fail closed if Rust dependencies stop using checked-in registry sources."""
+"""Fail closed if the resolved Rust dependency graph leaves the registry."""
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CARGO_TOML = ROOT / "Cargo.toml"
 CARGO_LOCK = ROOT / "Cargo.lock"
 
-cargo = CARGO_TOML.read_text(encoding="utf-8")
+metadata = json.loads(
+    subprocess.check_output(
+        ["cargo", "metadata", "--locked", "--format-version", "1"],
+        cwd=ROOT,
+        text=True,
+    )
+)
+
+for package in metadata["packages"]:
+    source = package.get("source")
+    if source is None:
+        # Workspace/local package.
+        continue
+    if source.startswith(("git+", "path+")):
+        raise SystemExit(
+            f"Package {package['name']} uses forbidden source: {source}"
+        )
+    if not source.startswith("registry+"):
+        raise SystemExit(
+            f"Package {package['name']} uses an unapproved source: {source}"
+        )
+
+# Every registry package resolved in Cargo.lock must have a 64-hex checksum.
 lock = CARGO_LOCK.read_text(encoding="utf-8")
-
-for pattern, label in ((r"\bgit\s*=", "git dependencies"), (r"\bpath\s*=", "path dependencies")):
-    if re.search(pattern, cargo):
-        raise SystemExit(f"Cargo.toml contains forbidden {label}")
-
-for pattern, label in ((r'source\s*=\s*"git\+', "git-sourced lock entry"), (r'source\s*=\s*"path\+', "path-sourced lock entry")):
-    if re.search(pattern, lock):
-        raise SystemExit(f"Cargo.lock contains a forbidden {label}")
-
-# Every package pulled from crates.io must have a 64-hex checksum in Cargo.lock.
 blocks = re.split(r"(?=\[\[package\]\]\n)", lock)
 for block in blocks:
     name = re.search(r'^name = "([^"]+)"$', block, re.MULTILINE)
@@ -33,6 +46,6 @@ for block in blocks:
             raise SystemExit(f"Registry package {name.group(1)} has no checksum")
 
 print("Dependency source policy: PASS")
-print("- Cargo.toml contains no git/path dependencies")
+print("- Resolved dependencies are registry-sourced or local workspace packages")
 print("- Cargo.lock contains no git/path sources")
-print("- crates.io packages in Cargo.lock are checksum-pinned")
+print("- crates.io registry packages in Cargo.lock are checksum-pinned")
