@@ -1,0 +1,115 @@
+name: SkellyKuntz Mint
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '35 16 17 9 *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skellykuntz-mint
+  cancel-in-progress: true
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MINT_COLLECTION: skellykuntz
+      MINT_TARGET_DATE: 2026-09-17
+      MINT_INTERACTION_TIMEOUT_SECONDS: 2700
+      MINT_DRY_RUN: '0'
+      MINT_FAST_HOT_LEAD_MS: 5000
+    steps:
+      - name: Check out deployment branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up repository Rust toolchain
+        uses: dtolnay/rust-toolchain@4716b85f2fac3e324e64fa2810f6b5c3905760a5 # 1.97.1
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Cache Rust build and registry
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Verify required secrets are present
+        shell: bash
+        env:
+          MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
+          MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+        run: |
+          test -n "$MINT_WALLET_KEY" || { echo "MINT_WALLET_KEY is missing"; exit 1; }
+          test -n "$MINT_RPC_URL" || { echo "MINT_RPC_URL is missing"; exit 1; }
+
+      - name: Verify configured RPC is Robinhood Chain mainnet
+        shell: bash
+        env:
+          MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from urllib.parse import urlparse
+
+          rpc = urlparse(os.environ["MINT_RPC_URL"])
+          if rpc.scheme != "https" or rpc.hostname not in {
+              "rpc.mainnet.chain.robinhood.com",
+              "robinhood-mainnet.g.alchemy.com",
+          }:
+              raise SystemExit("MINT_RPC_URL must be an HTTPS Robinhood Chain mainnet endpoint")
+
+          payload = json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "eth_chainId",
+              "params": [],
+          }).encode()
+          request = urllib.request.Request(
+              os.environ["MINT_RPC_URL"],
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=10) as response:
+              result = json.load(response)
+          chain_id = int(result["result"], 16)
+          print(f"RPC chain_id={chain_id}")
+          if chain_id != 4663:
+              raise SystemExit(f"Wrong network: expected Robinhood Chain mainnet (4663), got {chain_id}")
+          PY
+
+      - name: Stop manual runs until the target date
+        shell: bash
+        run: |
+          test "$(date -u +%F)" = "2026-09-17" || {
+            echo "Public mint target date is 2026-09-17; exiting without minting."
+            exit 0
+          }
+
+      - name: Apply isolated fast hot-path lead
+        run: python3 scripts/prepare_fast_build.py
+
+      - name: Build opensea-mint
+        run: cargo build --release --locked --bin opensea-mint
+
+      - name: Confirm binary is executable
+        shell: bash
+        run: test -x target/release/opensea-mint
+
+      - name: Run SkellyKuntz mint runner
+        env:
+          MINT_WALLET_KEY: ${{ secrets.MINT_WALLET_KEY }}
+          MINT_RPC_URL: ${{ secrets.MINT_RPC_URL }}
+        run: python3 cloudflare/mint_runner.py
